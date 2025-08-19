@@ -8,7 +8,59 @@ import threading
 import time
 from enum import Enum
 from typing import Callable, Dict, Optional
-from PyQt6.QtCore import QObject, pyqtSignal
+
+# Try to import PyQt6, fall back to basic implementation if not available
+try:
+    from PyQt6.QtCore import QObject, pyqtSignal
+    PYQT_AVAILABLE = True
+    
+    class BaseStateMachine(QObject):
+        """Base class with PyQt6 signals"""
+        # Signals for state changes
+        state_changed = pyqtSignal(object, object)  # new_state, old_state
+        error_occurred = pyqtSignal(str)  # error_message
+        
+        def __init__(self):
+            super().__init__()
+        
+        def emit_state_changed(self, new_state, old_state):
+            self.state_changed.emit(new_state, old_state)
+        
+        def emit_error(self, error_message):
+            self.error_occurred.emit(error_message)
+
+except ImportError:
+    PYQT_AVAILABLE = False
+    
+    class BaseStateMachine:
+        """Fallback base class without PyQt6"""
+        
+        def __init__(self):
+            self._signal_callbacks = {'state_changed': [], 'error_occurred': []}
+        
+        def connect_state_changed(self, callback):
+            """Connect state changed callback"""
+            self._signal_callbacks['state_changed'].append(callback)
+        
+        def connect_error_occurred(self, callback):
+            """Connect error occurred callback"""
+            self._signal_callbacks['error_occurred'].append(callback)
+        
+        def emit_state_changed(self, new_state, old_state):
+            """Emit state changed signal"""
+            for callback in self._signal_callbacks['state_changed']:
+                try:
+                    callback(new_state, old_state)
+                except Exception as e:
+                    logging.error(f"State changed callback error: {e}")
+        
+        def emit_error(self, error_message):
+            """Emit error signal"""
+            for callback in self._signal_callbacks['error_occurred']:
+                try:
+                    callback(error_message)
+                except Exception as e:
+                    logging.error(f"Error callback error: {e}")
 
 
 class CameraState(Enum):
@@ -20,15 +72,11 @@ class CameraState(Enum):
     ERROR = "error"
 
 
-class StateMachine(QObject):
+class StateMachine(BaseStateMachine):
     """
     Finite State Machine for camera operations
     Manages transitions between states with proper validation
     """
-    
-    # Signals for state changes
-    state_changed = pyqtSignal(CameraState, CameraState)  # new_state, old_state
-    error_occurred = pyqtSignal(str)  # error_message
     
     # Valid state transitions
     VALID_TRANSITIONS = {
@@ -106,7 +154,7 @@ class StateMachine(QObject):
                     self._retry_count = 0
                 
                 # Emit signal
-                self.state_changed.emit(new_state, old_state)
+                self.emit_state_changed(new_state, old_state)
                 
                 # Start watchdog for certain states
                 self._start_watchdog()
@@ -144,7 +192,7 @@ class StateMachine(QObject):
     def _handle_error(self, error_message: str):
         """Handle error state transition"""
         self.logger.error(f"Error: {error_message}")
-        self.error_occurred.emit(error_message)
+        self.emit_error(error_message)
         
         # Increment retry count
         self._retry_count += 1
@@ -152,7 +200,7 @@ class StateMachine(QObject):
         # Transition to error state
         if self._current_state != CameraState.ERROR:
             self._current_state = CameraState.ERROR
-            self.state_changed.emit(CameraState.ERROR, self._current_state)
+            self.emit_state_changed(CameraState.ERROR, self._current_state)
         
         # Auto-recovery if retries available
         if self._retry_count <= self._max_retries:
@@ -208,7 +256,7 @@ class StateMachine(QObject):
             old_state = self._current_state
             self._current_state = CameraState.IDLE
             self._retry_count = 0
-            self.state_changed.emit(CameraState.IDLE, old_state)
+            self.emit_state_changed(CameraState.IDLE, old_state)
     
     def get_state_duration(self) -> float:
         """Get how long we've been in current state (seconds)"""
@@ -223,90 +271,156 @@ class StateMachine(QObject):
         self.force_idle()
 
 
-class SafeStopManager(QObject):
-    """
-    Manages safe stop operations for recording
-    Ensures proper encoder drainage and container finalization
-    """
-    
-    stop_completed = pyqtSignal(bool)  # success
-    stop_progress = pyqtSignal(str)    # status_message
-    
-    def __init__(self, state_machine: StateMachine):
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
-        self.state_machine = state_machine
-        self._stop_in_progress = False
-    
-    def is_stopping(self) -> bool:
-        """Check if stop operation is in progress"""
-        return self._stop_in_progress
-    
-    def safe_stop_recording(self, camera_manager, encoder_manager):
+# Safe Stop Manager - only available with PyQt6
+if PYQT_AVAILABLE:
+    class SafeStopManager(QObject):
         """
-        Perform safe stop of recording:
-        1. Drain encoder
-        2. Finalize container
-        3. Wait on camera request
-        4. Return to Preview
+        Manages safe stop operations for recording
+        Ensures proper encoder drainage and container finalization
         """
-        if self._stop_in_progress:
-            self.logger.warning("Stop already in progress")
-            return
         
-        self._stop_in_progress = True
-        self.logger.info("Starting safe stop sequence")
+        stop_completed = pyqtSignal(bool)  # success
+        stop_progress = pyqtSignal(str)    # status_message
         
-        # Run safe stop in separate thread
-        stop_thread = threading.Thread(
-            target=self._safe_stop_worker,
-            args=(camera_manager, encoder_manager),
-            daemon=True
-        )
-        stop_thread.start()
-    
-    def _safe_stop_worker(self, camera_manager, encoder_manager):
-        """Worker thread for safe stop operation"""
-        try:
-            # Step 1: Signal recording stop
-            self.stop_progress.emit("Stopping recording...")
-            
-            # Step 2: Drain encoder
-            self.stop_progress.emit("Draining encoder...")
-            if encoder_manager:
-                encoder_manager.drain_encoder()
-            
-            time.sleep(0.5)  # Brief pause for encoder
-            
-            # Step 3: Finalize container
-            self.stop_progress.emit("Finalizing file...")
-            if encoder_manager:
-                encoder_manager.finalize_recording()
-            
-            # Step 4: Wait on camera request
-            self.stop_progress.emit("Finalizing camera...")
-            if camera_manager:
-                camera_manager.stop_recording_safe()
-            
-            time.sleep(0.2)  # Brief pause for camera
-            
-            # Step 5: Transition to preview
-            self.stop_progress.emit("Returning to preview...")
-            success = self.state_machine.transition_to(CameraState.PREVIEW)
-            
-            if success:
-                self.logger.info("Safe stop completed successfully")
-                self.stop_progress.emit("Ready")
-            else:
-                self.logger.error("Failed to return to preview state")
-                self.stop_progress.emit("Stop completed with errors")
-            
-            self.stop_completed.emit(success)
-            
-        except Exception as e:
-            self.logger.error(f"Safe stop failed: {e}")
-            self.stop_progress.emit(f"Stop failed: {e}")
-            self.stop_completed.emit(False)
-            
-        finally:
+        def __init__(self, state_machine: StateMachine):
+            super().__init__()
+            self.logger = logging.getLogger(__name__)
+            self.state_machine = state_machine
             self._stop_in_progress = False
+        
+        def is_stopping(self) -> bool:
+            """Check if stop operation is in progress"""
+            return self._stop_in_progress
+        
+        def safe_stop_recording(self, camera_manager, encoder_manager):
+            """
+            Perform safe stop of recording:
+            1. Drain encoder
+            2. Finalize container
+            3. Wait on camera request
+            4. Return to Preview
+            """
+            if self._stop_in_progress:
+                self.logger.warning("Stop already in progress")
+                return
+            
+            self._stop_in_progress = True
+            self.logger.info("Starting safe stop sequence")
+            
+            # Run safe stop in separate thread
+            stop_thread = threading.Thread(
+                target=self._safe_stop_worker,
+                args=(camera_manager, encoder_manager),
+                daemon=True
+            )
+            stop_thread.start()
+        
+        def _safe_stop_worker(self, camera_manager, encoder_manager):
+            """Worker thread for safe stop operation"""
+            try:
+                # Step 1: Signal recording stop
+                self.stop_progress.emit("Stopping recording...")
+                
+                # Step 2: Drain encoder
+                self.stop_progress.emit("Draining encoder...")
+                if encoder_manager:
+                    encoder_manager.drain_encoder()
+                
+                time.sleep(0.5)  # Brief pause for encoder
+                
+                # Step 3: Finalize container
+                self.stop_progress.emit("Finalizing file...")
+                if encoder_manager:
+                    encoder_manager.finalize_recording()
+                
+                # Step 4: Wait on camera request
+                self.stop_progress.emit("Finalizing camera...")
+                if camera_manager:
+                    camera_manager.stop_recording_safe()
+                
+                time.sleep(0.2)  # Brief pause for camera
+                
+                # Step 5: Transition to preview
+                self.stop_progress.emit("Returning to preview...")
+                success = self.state_machine.transition_to(CameraState.PREVIEW)
+                
+                if success:
+                    self.logger.info("Safe stop completed successfully")
+                    self.stop_progress.emit("Ready")
+                else:
+                    self.logger.error("Failed to return to preview state")
+                    self.stop_progress.emit("Stop completed with errors")
+                
+                self.stop_completed.emit(success)
+                
+            except Exception as e:
+                self.logger.error(f"Safe stop failed: {e}")
+                self.stop_progress.emit(f"Stop failed: {e}")
+                self.stop_completed.emit(False)
+                
+            finally:
+                self._stop_in_progress = False
+
+else:
+    # Fallback SafeStopManager without PyQt6
+    class SafeStopManager:
+        """Fallback safe stop manager without PyQt6 signals"""
+        
+        def __init__(self, state_machine: StateMachine):
+            self.logger = logging.getLogger(__name__)
+            self.state_machine = state_machine
+            self._stop_in_progress = False
+            self._progress_callbacks = []
+            self._completed_callbacks = []
+        
+        def connect_stop_progress(self, callback):
+            """Connect progress callback"""
+            self._progress_callbacks.append(callback)
+        
+        def connect_stop_completed(self, callback):
+            """Connect completed callback"""
+            self._completed_callbacks.append(callback)
+        
+        def emit_stop_progress(self, message):
+            """Emit progress signal"""
+            for callback in self._progress_callbacks:
+                try:
+                    callback(message)
+                except Exception as e:
+                    self.logger.error(f"Progress callback error: {e}")
+        
+        def emit_stop_completed(self, success):
+            """Emit completed signal"""
+            for callback in self._completed_callbacks:
+                try:
+                    callback(success)
+                except Exception as e:
+                    self.logger.error(f"Completed callback error: {e}")
+        
+        def is_stopping(self) -> bool:
+            """Check if stop operation is in progress"""
+            return self._stop_in_progress
+        
+        def safe_stop_recording(self, camera_manager, encoder_manager):
+            """Perform safe stop (simplified version)"""
+            if self._stop_in_progress:
+                self.logger.warning("Stop already in progress")
+                return
+            
+            self._stop_in_progress = True
+            self.logger.info("Starting safe stop sequence")
+            
+            try:
+                self.emit_stop_progress("Stopping recording...")
+                time.sleep(0.5)
+                
+                self.emit_stop_progress("Finalizing...")
+                success = self.state_machine.transition_to(CameraState.PREVIEW)
+                
+                self.emit_stop_completed(success)
+                
+            except Exception as e:
+                self.logger.error(f"Safe stop failed: {e}")
+                self.emit_stop_completed(False)
+            finally:
+                self._stop_in_progress = False
