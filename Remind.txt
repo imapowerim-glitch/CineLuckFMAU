@@ -1,0 +1,1 @@
+make everything only with libraries and methods what we have in latest picamera2 and instructions. don't forger about modern interface with touchscreen
