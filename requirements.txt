@@ -1,0 +1,36 @@
+# CineLuck - Professional Raspberry Pi Video Camera
+# Core dependencies for Raspberry Pi 5 with Picamera2
+
+# Camera and imaging
+picamera2>=0.3.17
+libcamera>=0.0.1
+numpy>=1.21.0
+opencv-python>=4.8.0
+
+# GUI framework for touch interface
+PyQt6>=6.5.0
+PyQt6-Qt6>=6.5.0
+
+# Audio processing
+pyaudio>=0.2.11
+sounddevice>=0.4.6
+
+# Video encoding and containers
+av>=10.0.0
+
+# System and hardware monitoring
+psutil>=5.9.0
+gpiozero>=1.6.2
+
+# Configuration and file management
+pyyaml>=6.0
+jsonschema>=4.17.0
+
+# Logging and utilities
+colorlog>=6.7.0
+python-dateutil>=2.8.0
+
+# Optional dependencies for enhanced features
+# Uncomment if needed:
+# h5py>=3.8.0  # For advanced data storage
+# scipy>=1.10.0  # For signal processing

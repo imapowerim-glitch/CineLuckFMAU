@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CineLuck
+Comment=Professional Video Camera for Raspberry Pi 5
+Exec=cineluck
+Icon=camera-video
+Terminal=false
+Categories=AudioVideo;Video;Recorder;
+Keywords=camera;video;recording;picamera2;raspberry;pi;
+StartupNotify=true
+MimeType=video/mp4;video/x-matroska;
